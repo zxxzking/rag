@@ -1,256 +1,544 @@
-# LlamaIndex RAG 实战项目
+﻿# LlamaIndex RAG 项目说明
 
 ## 项目概述
 
-这是一个基于 LlamaIndex 框架构建的检索增强生成（RAG）系统，提供了完整的文档处理、检索和对话功能。该系统能够将多种格式的文档（PDF、TXT、DOCX、Markdown）导入到向量数据库中，并通过混合检索策略（向量检索 + BM25）提供高质量的问答服务。
+这是一个基于 FastAPI 和 LlamaIndex 构建的本地 RAG 问答服务。项目支持文档上传、文档解析、切分、嵌入、向量化入库、混合检索、重排序、答案生成、流式输出、用户登录认证、文档状态记录以及多会话列表管理。
 
-### 核心功能
+当前项目更像是一个 RAG 后端服务原型，前端可以通过 API 完成登录、上传知识库文档、查看文档处理状态、发起普通问答或流式问答，并在左侧展示当前用户创建过的会话列表。
 
-- **多格式文档处理**：支持PDF、TXT、DOCX、Markdown等多种文档格式的上传和解析
-- **混合检索策略**：结合向量检索和BM25关键词检索，提升检索精度
-- **文档重排序**：使用专用的重排序模型优化检索结果质量
-- **流式回答生成**：支持SSE流式返回生成内容，提供更好的用户体验
-- **多会话管理**：支持多个独立会话的历史记录管理
-- **用户认证机制**：基于JWT的安全认证系统
-- **历史记录优化**：自动管理和优化会话历史长度，防止超长历史导致的性能问题
+## 当前核心能力
 
-## 技术架构
-
-### 系统架构
-
-```
-┌─────────────┐      ┌─────────────┐      ┌─────────────┐
-│  客户端应用  │ ──→ │  FastAPI API │ ──→ │ RAG Service │
-└─────────────┘      └─────────────┘      └─────┬───────┘
-                                               │
-                       ┌───────────────────────┼───────────────────────┐
-                       ▼                       ▼                       ▼
-           ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-           │  Document       │     │  RAG            │     │  LLM            │
-           │  Ingestion      │     │  Workflow       │     │  Model          │
-           │  Pipeline       │     │                 │     │                 │
-           └────────┬────────┘     └────────┬────────┘     └────────┬────────┘
-                    │                       │                       │
-                    ▼                       ▼                       ▼
-           ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-           │  ChromaDB       │     │  Redis          │     │  DashScope      │
-           │  (向量存储)      │     │  (文档存储)     │     │  (文生模型)     │
-           └─────────────────┘     └─────────────────┘     └─────────────────┘
-```
-
-### 主要模块
-
-1. **API层**：基于FastAPI提供RESTful API接口
-2. **服务层**：封装核心RAG逻辑，处理请求适配
-3. **核心层**：包含文档摄取、检索工作流和应用管理
-4. **存储层**：使用ChromaDB和Redis进行数据持久化
-
-## 项目结构
-
-```
-llamaindex实战案例-新/
-├── app/                      # FastAPI应用
-│   ├── __init__.py
-│   ├── main.py               # 应用入口
-│   ├── routers/              # API路由
-│   │   ├── chat.py           # 聊天相关接口
-│   │   ├── documents.py      # 文档相关接口
-│   │   └── users.py          # 用户相关接口
-│   ├── schemas.py            # Pydantic数据模型
-│   └── services/             # 服务层
-│       └── rag_service.py    # RAG服务封装
-├── config/                   # 配置
-│   └── settings.py           # 应用配置类
-├── core/                     # 核心业务逻辑
-│   ├── __init__.py
-│   ├── application.py        # RAG应用主类
-│   ├── documentManager.py    # 文档管理器
-│   ├── events.py             # 事件定义
-│   ├── ingestion.py          # 文档摄取管道
-│   ├── pdf_parser.py         # PDF解析器
-│   ├── pdfProcessor.py       # PDF处理器
-│   └── workflow.py           # RAG工作流
-├── file/                     # 文件存储
-│   ├── chroma_db/            # Chroma向量数据库
-│   ├── image/                # 图片存储
-│   ├── logs/                 # 日志文件
-│   └── storage_bm25/         # BM25索引存储
-├── requirements.txt          # 项目依赖
-├── test/                     # 测试目录
-└── utils/                    # 工具类
-    └── logger.py             # 日志配置
-```
+- 用户认证：使用 JWT，用户数据保存在 SQLite 中。
+- 默认账号：`root`，默认密码：`root`。
+- 文档上传：支持多文件上传，并保存到 `file/resources`。
+- 文档摄取：对文档进行解析、切分、标题提取、嵌入和向量化。
+- 向量数据库：使用本地 Chroma，持久化目录为 `file/chroma_db`。
+- 文档/索引存储：使用 Redis 存储 LlamaIndex 的 docstore、index store 和 ingestion cache。
+- 文档状态：使用 SQLite 记录文件是否正在处理、是否完成向量化、节点数量、错误信息等。
+- 检索流程：向量检索 + BM25 混合检索，再经过 reranker 重排序。
+- 回答生成：通过 LlamaIndex response synthesizer 基于检索节点生成回答。
+- 流式输出：支持 SSE 流式返回来源和 token 片段。
+- 多会话列表：使用 SQLite 记录用户创建的 chat session，标题默认取首次提问前 18 个字符。
 
 ## 技术栈
 
-### 核心框架
-- **LlamaIndex**: RAG应用构建框架
-- **FastAPI**: 高性能Web框架
-- **Pydantic**: 数据验证和设置管理
+- Web 框架：FastAPI
+- RAG 框架：LlamaIndex
+- 本地 LLM：Ollama
+- 当前模型配置：`deepseek-r1:1.5b`
+- 嵌入模型：HuggingFaceEmbedding，本地路径来自 `Settings.EMBEDDING_MODEL_PATH`
+- 向量数据库：Chroma
+- 关键词检索：BM25Retriever
+- 混合检索：QueryFusionRetriever
+- 重排序：SentenceTransformerRerank
+- 结构化状态库：SQLite
+- LlamaIndex 存储层：Redis
+- 认证：JWT + pwdlib 密码哈希
 
-### 模型与向量库
-- **DashScope LLM**: 生成模型（通义千问）
-- **HuggingFace Embedding**: 本地嵌入模型
-- **ChromaDB**: 向量数据库
-- **Redis**: 文档和索引存储
+## 目录结构
 
-### 文档处理
-- **PyPDF**: PDF文件处理
-- **python-docx**: Word文档处理
-- **Unstructured**: 非结构化数据处理
-
-### 检索优化
-- **BM25Retriever**: 关键词检索
-- **SentenceTransformerRerank**: 文档重排序
-
-## 核心功能模块
-
-### 1. 文档摄取管道 (DocumentIngestionPipeline)
-
-负责文档的上传、解析、切分、向量化和索引构建：
-
-- 支持多格式文档处理
-- 文档分块和向量化
-- 索引持久化存储
-- 缓存机制优化
-
-### 2. RAG工作流 (RAGWorkflow)
-
-实现检索增强生成的核心流程：
-
-- 混合检索策略（向量检索 + BM25）
-- 检索结果重排序
-- 上下文构建和回答生成
-
-### 3. RAG应用管理 (RAGApplication)
-
-应用层面的功能整合：
-
-- 多会话管理
-- 流式/非流式查询支持
-- 历史记录优化（防止超长历史导致的性能问题）
-- 错误处理和日志记录
-
-## API接口
-
-### 文档管理
-
-- **POST /api/docs/upload**: 上传并处理文档
-- **GET /api/docs/list**: 获取已上传文档列表
-- **POST /api/docs/reset**: 重置系统（清空索引等）
-
-### 对话功能
-
-- **POST /api/chat/query**: 发送问题，获取回答
-- **POST /api/chat/stream**: 流式获取回答
-- **POST /api/chat/clear**: 清空会话历史
-
-### 用户管理
-
-- **POST /users/register**: 用户注册
-- **POST /users/login**: 用户登录
-
-### 系统监控
-
-- **GET /api/health**: 健康检查
-
-## 配置说明
-
-主要配置项位于 `config/settings.py`：
-
-- **模型配置**: API密钥、模型名称、温度参数
-- **文档处理**: 分块大小、重叠度
-- **检索配置**: 相似度阈值、Top-K参数、重排序配置
-- **存储路径**: 数据库和文件存储路径
-
-## 安装与部署
-
-### 前置条件
-
-- Python 3.9+
-- Redis服务
-- CUDA环境（推荐，用于加速嵌入模型）
-
-### 安装步骤
-
-1. 克隆项目
-2. 安装依赖：
-   ```bash
-   pip install -r requirements.txt
-   ```
-3. 配置环境变量（在.env文件中）：
-   ```
-   DASHSCOPE_API_KEY=your_api_key_here
-   ```
-4. 启动应用：
-   ```bash
-   python -m app.main
-   ```
-
-### Docker部署
-
-（待实现）
-
-## 使用示例
-
-### 文档上传与处理
-
-```python
-from app.services.rag_service import RAGService
-
-rag_service = RAGService()
-result = rag_service.upload_files(["path/to/file.pdf"])
-print(result)
+```text
+llamaindex_project/
+├── app/
+│   ├── main.py                 # FastAPI 应用入口
+│   ├── schemas.py              # API 请求/响应模型
+│   ├── routers/
+│   │   ├── chat.py             # 聊天、流式聊天、会话列表接口
+│   │   ├── documents.py        # 文档上传、文档列表、重置接口
+│   │   └── users.py            # 登录、注册、用户信息接口
+│   └── services/
+│       └── rag_service.py      # API 层与核心 RAG 应用之间的服务适配
+├── config/
+│   └── settings.py             # 全局配置
+├── core/
+│   ├── application.py          # RAG 应用主类
+│   ├── ingestion.py            # 文档摄取管道
+│   ├── workflow.py             # RAG 工作流
+│   ├── events.py               # Workflow 事件定义
+│   ├── documentManager.py      # SQLite 文档状态管理
+│   ├── chatSessionManager.py   # SQLite 会话列表管理
+│   ├── userManager.py          # SQLite 用户管理
+│   └── pdf_parser.py           # PDF 解析处理
+├── file/
+│   ├── app.db                  # SQLite 数据库
+│   ├── chroma_db/              # Chroma 向量库持久化目录
+│   ├── resources/              # 上传后的原始文档
+│   ├── storage_bm25/           # BM25 持久化目录
+│   └── image/                  # PDF 图片资源目录
+├── requirements.txt
+└── README.md
 ```
 
-### 发起查询
+## 系统架构
 
-```python
-from app.services.rag_service import RAGService
+```mermaid
+flowchart TD
+    Client["前端/客户端"] --> API["FastAPI API"]
+    API --> Auth["JWT 认证"]
+    API --> RAGService["RAGService"]
 
-rag_service = RAGService()
-history, error = rag_service.query("session_1", "请介绍项目的核心功能")
-if not error:
-    print(history[-1]['content'])  # 打印最新回答
+    RAGService --> App["RAGApplication"]
+    RAGService --> DocStatus["DocumentManager (SQLite)"]
+    RAGService --> Sessions["ChatSessionManager (SQLite)"]
+    Auth --> Users["UserManager (SQLite)"]
+
+    App --> Ingestion["DocumentIngestionPipeline"]
+    App --> Workflow["RAGWorkflow"]
+
+    Ingestion --> Parser["PDF/Text/Markdown 解析"]
+    Parser --> Splitter["Node Parser / SentenceSplitter"]
+    Splitter --> Embed["HuggingFace Embedding"]
+    Embed --> Chroma["Chroma Vector Store"]
+    Ingestion --> RedisDoc["Redis DocStore"]
+    Ingestion --> RedisIndex["Redis IndexStore"]
+    Ingestion --> RedisCache["Redis Ingestion Cache"]
+
+    Workflow --> VectorRetrieve["VectorIndexRetriever"]
+    Workflow --> BM25["BM25Retriever"]
+    VectorRetrieve --> Fusion["QueryFusionRetriever"]
+    BM25 --> Fusion
+    Fusion --> Rerank["SentenceTransformerRerank"]
+    Rerank --> Synth["Response Synthesizer"]
+    Synth --> LLM["Ollama LLM"]
 ```
 
-### 流式查询
+## 数据存储设计
 
-```python
-from app.services.rag_service import RAGService
-import asyncio
+### SQLite
 
-async def main():
-    rag_service = RAGService()
-    async for chunk in rag_service.query_stream("session_1", "请详细介绍RAG技术", True):
-        if chunk['type'] == 'text':
-            print(chunk['content'], end='', flush=True)
+SQLite 路径由 `Settings.SQLITE_DB_PATH` 指定，默认是：
 
-asyncio.run(main())
+```text
+file/app.db
 ```
 
-## 系统优化
+当前保存三类业务数据。
 
-1. **历史记录管理**：实现了智能的历史记录长度限制和截断机制，防止过长历史导致的空回复问题
-2. **图片处理优化**：改进了Markdown图片提取逻辑，支持Windows路径格式和图片去重
-3. **检索优化**：使用混合检索和重排序策略提升检索质量
-4. **错误处理**：完善的异常捕获和日志记录机制
+### 1. users
 
-## 注意事项
+由 `core/userManager.py` 管理。
 
-1. **API密钥安全**：请妥善保管您的DashScope API密钥
-2. **存储容量**：监控向量数据库和Redis存储的使用情况
-3. **性能优化**：对于大规模文档集，可能需要调整分块大小和检索参数
-4. **安全配置**：生产环境中请修改CORS设置，限制允许的来源
+用途：保存真实用户数据，不再使用内存字典。
 
-## 扩展方向
+主要字段：
 
-1. 支持更多文档格式
-2. 实现文档更新和版本控制
-3. 添加文档摘要和可视化功能
-4. 多模型支持和模型切换
-5. 添加用户权限管理
+- `username`
+- `hashed_password`
+- `email`
+- `full_name`
+- `disabled`
+- `created_at`
+- `updated_at`
 
-## 许可证
+启动时会确保存在默认用户：
 
-MIT License
+```text
+username: root
+password: root
+```
+
+### 2. documents
+
+由 `core/documentManager.py` 管理。
+
+用途：记录文档处理状态，供 `/api/docs/list` 返回给前端。
+
+主要字段：
+
+- `doc_id`
+- `file_name`
+- `file_path`
+- `file_type`
+- `file_size`
+- `status`
+- `message`
+- `node_count`
+- `error`
+- `created_at`
+- `updated_at`
+
+常见状态：
+
+- `processing`
+- `completed`
+- `failed`
+
+### 3. chat_sessions
+
+由 `core/chatSessionManager.py` 管理。
+
+用途：记录当前用户创建过哪些对话，供左侧会话列表展示。
+
+主要字段：
+
+- `session_id`
+- `username`
+- `title`
+- `first_query`
+- `last_message`
+- `message_count`
+- `created_at`
+- `updated_at`
+
+默认标题逻辑：
+
+```text
+取用户首次提问的前 18 个字符
+```
+
+## Redis 存储
+
+项目使用 Redis 作为 LlamaIndex 的存储层，默认连接：
+
+```text
+host: 127.0.0.1
+port: 6380
+```
+
+当前使用的 namespace / collection：
+
+```text
+redis_index
+redis_docs
+redis_cache
+```
+
+用途：
+
+- `RedisIndexStore`：保存 LlamaIndex index struct
+- `RedisDocumentStore`：保存文档和切分后的 nodes
+- `RedisKVStore`：作为 ingestion cache
+
+## Chroma 向量库
+
+项目当前使用本地 Chroma：
+
+```python
+chromadb.PersistentClient(AppSettings.CHROMA_PERSIST_DIR)
+```
+
+默认持久化目录：
+
+```text
+file/chroma_db
+```
+
+默认 collection：
+
+```text
+quickstart
+```
+
+## 文档摄取流程
+
+文档上传入口：
+
+```text
+POST /api/docs/upload
+```
+
+处理流程：
+
+1. FastAPI 接收上传文件。
+2. 文件保存到 `file/resources`。
+3. `RAGService` 将文件标记为 `processing`。
+4. `DocumentIngestionPipeline` 读取文件。
+5. PDF 走 `MultimodalPDFProcessor` 转成 markdown 文档。
+6. 普通文件通过 `SimpleDirectoryReader` 读取。
+7. 文档使用稳定逻辑 ID：
+
+```text
+knowledge_base/{file_name}
+```
+
+8. 文档切分成 nodes。
+9. 进行标题提取和 embedding。
+10. nodes 写入 Redis docstore。
+11. 向量写入 Chroma。
+12. 创建或更新 `VectorStoreIndex`。
+13. 处理成功后，SQLite 文档状态更新为 `completed`。
+14. 如果失败，SQLite 文档状态更新为 `failed`。
+
+## RAG 查询流程
+
+核心工作流在 `core/workflow.py`。
+
+流程：
+
+1. `retrieve_step`
+   - 使用向量检索器。
+   - 如果 BM25 可用，则通过 `QueryFusionRetriever` 做 Vector + BM25 混合检索。
+
+2. `rerank_step`
+   - 使用 `SentenceTransformerRerank` 对召回节点重排序。
+
+3. `generate_step`
+   - 使用 `get_response_synthesizer` 创建的 response synthesizer。
+   - 调用 `asynthesize(query, nodes)` 基于检索结果生成回答。
+
+4. `finalize_step`
+   - 返回回答内容。
+   - 返回来源节点的文本、分数和 metadata。
+   - 如果是流式模式，则返回 response generator。
+
+当前实现更接近 QueryEngine 风格：每次请求都是独立 query + retrieved nodes + synthesis。虽然系统有 session 列表，但暂时没有把多轮对话消息内容持久化为 ChatEngine 的 memory。
+
+## 聊天与会话
+
+### 非流式聊天
+
+```text
+POST /api/chat/chat
+```
+
+请求体示例：
+
+```json
+{
+  "session_id": null,
+  "query": "请总结一下知识库内容",
+  "knowledge_bool": true,
+  "model": "deepseek-r1:1.5b",
+  "temperature": 0.1,
+  "max_tokens": 100
+}
+```
+
+说明：
+
+- `session_id` 不传或为 `null` 时，系统会创建一个新会话。
+- `session_id` 传已有值时，系统会沿用该会话。
+- 返回中会包含实际使用的 `session_id`。
+
+响应示例：
+
+```json
+{
+  "session_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "messages": {
+    "role": "assistant",
+    "content": "回答内容",
+    "sources": []
+  }
+}
+```
+
+### 流式聊天
+
+```text
+POST /api/chat/chat/stream
+```
+
+返回格式：SSE。
+
+流式响应会先返回一个 session 信息包：
+
+```json
+{
+  "type": "session",
+  "finished": false,
+  "content": {
+    "session_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+    "title": "请总结一下知识库内容"
+  }
+}
+```
+
+后续会继续返回：
+
+- `sources`
+- `text`
+- `complete`
+- `error`
+
+### 会话列表
+
+```text
+GET /api/chat/sessions
+```
+
+用于前端左侧展示当前用户创建过的会话。
+
+### 删除会话
+
+```text
+DELETE /api/chat/sessions/{session_id}
+```
+
+只删除当前用户自己的会话记录。
+
+## 用户认证
+
+登录接口：
+
+```text
+POST /users/token
+```
+
+表单字段：
+
+```text
+username=root
+password=root
+```
+
+返回 JWT：
+
+```json
+{
+  "message": "login success",
+  "access_token": "...",
+  "token_type": "bearer",
+  "username": "root"
+}
+```
+
+后续请求需要携带：
+
+```text
+Authorization: Bearer <access_token>
+```
+
+常用用户接口：
+
+```text
+POST   /users/token
+POST   /users/register
+POST   /users/logout
+GET    /users/me
+PUT    /users/me
+GET    /users/all
+DELETE /users/me
+```
+
+## 文档接口
+
+```text
+POST /api/docs/upload
+GET  /api/docs/list
+POST /api/docs/reset
+```
+
+### /api/docs/list
+
+该接口现在从 SQLite 的 `documents` 表读取，不再从向量数据库 metadata 反推文档列表。
+
+返回内容包含：
+
+- 文件名
+- 文件类型
+- 文件大小
+- 当前状态
+- 节点数量
+- 错误信息
+- 创建/更新时间
+
+## 运行前依赖
+
+### 1. Redis
+
+需要本地 Redis 服务，当前代码默认使用：
+
+```text
+127.0.0.1:6380
+```
+
+### 2. Ollama
+
+需要本地 Ollama 服务：
+
+```text
+http://localhost:11434
+```
+
+并确保模型存在：
+
+```text
+deepseek-r1:1.5b
+```
+
+### 3. 本地 embedding / rerank 模型
+
+配置位于 `config/settings.py`：
+
+```python
+EMBEDDING_MODEL_PATH = r"D:\llm\Local_model\BAAI\bge-large-zh-v1___5"
+RERANK_MODEL_PATH = r"D:\llm\Local_model\BAAI\bge-reranker-large"
+```
+
+这些路径需要在本机真实存在。
+
+## 启动方式
+
+安装依赖：
+
+```bash
+pip install -r requirements.txt
+```
+
+启动服务：
+
+```bash
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+健康检查：
+
+```text
+GET /api/health
+```
+
+API 文档：
+
+```text
+http://localhost:8000/docs
+```
+
+## 重要配置
+
+主要配置在 `config/settings.py`。
+
+```python
+TEMPERATURE = 0.1
+CHUNK_SIZE = 512
+CHUNK_OVERLAP = 50
+SIMILARITY_TOP_K = 5
+RERANK_TOP_K = 3
+SIMILARITY_CUTOFF = 0.5
+CHROMA_PERSIST_DIR = file/chroma_db
+BM25_PERSIST_DIR = file/storage_bm25
+RESOURCES_DIR = file/resources
+SQLITE_DB_PATH = file/app.db
+```
+
+## 当前已知特点和注意事项
+
+1. 当前使用的是 response synthesizer，不是完整 ChatEngine memory 模式。
+
+   多会话列表已经落库，但会话消息内容暂时没有完整持久化。session 目前主要用于前端左侧会话管理和请求隔离。
+
+2. 工作流是固定 RAG 流程。
+
+   当前流程是 retrieve -> rerank -> synthesize。它更像 QueryEngine 形式，而不是带历史记忆的 ChatEngine。
+
+3. Chroma 是本地持久化。
+
+   如果清空或迁移向量库，需要同步考虑 Redis docstore/index store、BM25 目录和 SQLite 文档状态。
+
+4. Redis 中会出现 LlamaIndex 默认 namespace。
+
+   除了项目显式设置的 `redis_index`、`redis_docs`、`redis_cache` 外，LlamaIndex 自身也可能写入默认前缀。
+
+5. Windows 终端可能显示中文乱码。
+
+   项目部分源码注释在 PowerShell 中可能显示为乱码，但不一定代表源文件本身语义错误。
+
+## 后续可优化方向
+
+- 将会话消息完整落库，支持查看某个 session 的历史消息。
+- 在工作流中加入历史摘要或最近 N 轮对话，实现更接近 ChatEngine 的体验。
+- 增加管理员权限区分，限制文档上传和系统 reset。
+- 把 Redis、Ollama、SQLite、Chroma 连接配置统一改成环境变量。
+- 增加清理命令，统一清空 Chroma、Redis、BM25 和 SQLite 状态。
+- 增加图索引或关系抽取，用于后续关系检索。
+- 增加测试用例覆盖文档上传、session 创建、登录认证和 RAG 查询。
