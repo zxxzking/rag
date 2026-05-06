@@ -117,26 +117,17 @@ class RAGApplication:
         if not session_history:
             return []
 
-        # 1. 深拷贝，避免修改原始 session 数据（原始数据包含图片用于前端展示）
-        # 只取最近的 N 轮 (user + assistant = 2条，所以 * 2)
+
         slice_index = max(0, len(session_history) - (max_history_length * 2))
         recent_history = copy.deepcopy(session_history[slice_index:])
 
         clean_history = []
         current_char_count = 0
-        # 设定一个字符上限（例如 12000 字符，约 4k-6k tokens，根据你的模型调整）
         CHAR_LIMIT = max_token_limit * 3
 
-        # 2. 倒序处理：优先保留最近的对话
         for msg in reversed(recent_history):
-            # --- 核心优化：移除 sources 字段 ---
-            # 历史记录中的 sources 包含 Base64 图片和长文档，LLM 上下文不需要它们
             if "sources" in msg:
                 del msg["sources"]
-
-            # --- 核心优化：移除可能混入 content 中的 Base64 ---
-            # 如果你的 content 字段里也意外混入了 html 标签或 base64，可以在这里清理
-            # 这里假设 content 是纯文本，如果不是，可以用正则清理
             content_str = str(msg.get("content", ""))
 
             # 3. 长度检查
@@ -148,7 +139,6 @@ class RAGApplication:
             current_char_count += msg_len
             clean_history.insert(0, msg)  # 插到最前面，恢复顺序
 
-        # 4. 确保第一条是 user (某些模型要求 user 开头)
         if clean_history and clean_history[0]["role"] == "assistant":
             # 如果截断后第一条是 assistant，通常为了上下文连贯性可以选择丢弃，或者保留（视模型鲁棒性而定）
             # 这里选择保留，但打个日志
@@ -157,17 +147,6 @@ class RAGApplication:
         return clean_history
 
     def _ensure_workflow(self, streaming: bool):
-        """
-        [状态管理] 确保 Workflow 已初始化，且处于正确的流式/非流式模式。
-
-        背景:
-            LlamaIndex 的 ResponseSynthesizer 在初始化时就决定了是 'streaming' 还是 'compact'。
-            如果用户上一次请求是非流式，这一次是流式，我们需要重新构建 Workflow 实例，
-            否则调用 .run() 时行为会不符合预期。
-
-        Args:
-            streaming (bool): 本次请求是否期望流式输出
-        """
         # 1. 懒加载：如果索引还没加载，先加载索引
         if not self.ingestion_pipeline.index:
             self.ingestion_pipeline.get_documents()
@@ -187,9 +166,6 @@ class RAGApplication:
                 streaming=streaming
             )
 
-    # -----------------------------
-    # 核心业务方法：非流式查询 (一次性返回)
-    # -----------------------------
     async def query_documents(
             self,
             session_id: str,
@@ -209,19 +185,9 @@ class RAGApplication:
            Tuple[str, str]: (回复文本, 来源信息字符串)
        """
 
-        # --- [Step 1] 上下文准备 ---
-        # 获取服务端维护的会话历史 (引用)
-        # 将用户问题存入历史，作为本次生成的上下文
 
         try:
             if knowledge_bool:
-                # ==================================================
-                # 分支 A: RAG 知识库模式 (检索 + 生成)
-                # ==================================================
-
-                # 1. [状态管理] 确保 Workflow 为 "非流式(False)" 模式
-                #    这一点很重要，因为如果上一次调用是流式的，Workflow 内部状态可能是 streaming=True，
-                #    导致 .run() 返回生成器而不是完整对象，这里强制重置为 False。
                 self._ensure_workflow(streaming=False)
 
                 # 2. [执行] 运行 Workflow
@@ -231,30 +197,13 @@ class RAGApplication:
                     query=query,
                     timeout=60.0
                 )
-
-                # 3. [解析] 提取结果
-                #    非流式模式下，result['response'] 是一个完整的 Response 对象或字符串
                 response_text = str(result.get("response", ""))
 
-                #    提取来源节点 (Source Nodes)
                 sources = result.get("sources", [])
-
-                # 4. [格式化] 将来源节点转为前端可读的字符串 (含相似度、图片等)
                 sources_info_list = self._format_sources(sources)
-
-                # 5. [记录] 更新历史
-                #    注意：这里我们将来源信息也存入了历史记录结构中，方便后续追溯
                 return response_text, sources_info_list
 
             else:
-                # ==================================================
-                # 分支 B: 纯 LLM 聊天模式 (无检索)
-                # ==================================================
-
-                # 1. [执行] 调用 LLM
-                #    使用 acomplete (异步完成) 而不是 complete (同步完成)。
-                #    这样在等待 LLM 思考时，不会阻塞 Python 的主线程，允许其他用户的请求被处理。
-                # 安全处理历史记录，避免过长导致的问题
                 try:
                     llm_res = await Settings.llm.acomplete(query)
                 except Exception as e:
@@ -263,8 +212,6 @@ class RAGApplication:
 
                 response_text = llm_res.text
 
-                # 2. [记录] 更新历史
-                #    纯聊天模式没有来源，sources_info_list 为空
                 return response_text, ""
 
         except Exception as e:
