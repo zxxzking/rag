@@ -8,16 +8,21 @@ from pwdlib import PasswordHash
 
 from app.schemas import Token, TokenData, User, UserCreate, UserInDB, UserUpdate
 from core.userManager import UserManager
+from config.settings import Settings as AppSettings
 
-SECRET_KEY = "09d25e094faa6ca2556c818166b7a9563b93f7099f6f0f4caa6cf63b88e8d3e7"
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+SECRET_KEY = AppSettings.JWT_SECRET_KEY
+ALGORITHM = AppSettings.JWT_ALGORITHM
+ACCESS_TOKEN_EXPIRE_MINUTES = AppSettings.ACCESS_TOKEN_EXPIRE_MINUTES
 
 password_hash = PasswordHash.recommended()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/users/token")
 router = APIRouter()
 user_manager = UserManager()
-user_manager.ensure_default_user(password_hash.hash("root"))
+if AppSettings.ENABLE_DEFAULT_ADMIN:
+    user_manager.ensure_default_user(
+        username=AppSettings.DEFAULT_ADMIN_USERNAME,
+        hashed_password=password_hash.hash(AppSettings.DEFAULT_ADMIN_PASSWORD),
+    )
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -80,6 +85,17 @@ async def get_current_active_user(
 ) -> User:
     if current_user.disabled:
         raise HTTPException(status_code=400, detail="Inactive user")
+    return current_user
+
+
+async def get_current_admin_user(
+        current_user: Annotated[User, Depends(get_current_active_user)]
+) -> User:
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin permission required",
+        )
     return current_user
 
 
@@ -175,7 +191,7 @@ async def protected_route(
 
 @router.get("/all", summary="List users")
 async def get_all_users(
-        current_user: Annotated[User, Depends(get_current_active_user)]
+        current_user: Annotated[User, Depends(get_current_admin_user)]
 ) -> dict:
     users = [
         User(**{k: v for k, v in user.items() if k != "hashed_password"})

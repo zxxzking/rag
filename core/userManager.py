@@ -33,12 +33,19 @@ class UserManager:
                     hashed_password TEXT NOT NULL,
                     email TEXT,
                     full_name TEXT,
+                    role TEXT NOT NULL DEFAULT 'user',
                     disabled INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
                 """
             )
+            columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(users)").fetchall()
+            }
+            if "role" not in columns:
+                conn.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_users_username
@@ -46,25 +53,28 @@ class UserManager:
                 """
             )
 
-    def ensure_default_user(self, hashed_password: str) -> None:
+    def ensure_default_user(self, username: str, hashed_password: str) -> None:
+        existing = self.get_user(username)
+        if existing:
+            if existing.get("role") != "admin":
+                with self._connect() as conn:
+                    conn.execute(
+                        "UPDATE users SET role = 'admin', updated_at = ? WHERE username = ?",
+                        (self._now(), username),
+                    )
+            return
         now = self._now()
         with self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO users (
-                    username, hashed_password, email, full_name,
+                    username, hashed_password, email, full_name, role,
                     disabled, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, 0, ?, ?)
-                ON CONFLICT(username) DO UPDATE SET
-                    hashed_password = excluded.hashed_password,
-                    email = COALESCE(users.email, excluded.email),
-                    full_name = COALESCE(users.full_name, excluded.full_name),
-                    disabled = 0,
-                    updated_at = excluded.updated_at
+                VALUES (?, ?, ?, ?, 'admin', 0, ?, ?)
                 """,
                 (
-                    "root",
+                    username,
                     hashed_password,
                     "admin@example.com",
                     "Administrator",
@@ -77,7 +87,7 @@ class UserManager:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT username, hashed_password, email, full_name, disabled
+                SELECT username, hashed_password, email, full_name, role, disabled
                 FROM users
                 WHERE username = ?
                 """,
@@ -96,18 +106,19 @@ class UserManager:
         hashed_password: str,
         email: Optional[str] = None,
         full_name: Optional[str] = None,
+        role: str = "user",
     ) -> Dict[str, Any]:
         now = self._now()
         with self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO users (
-                    username, hashed_password, email, full_name,
+                    username, hashed_password, email, full_name, role,
                     disabled, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, 0, ?, ?)
+                VALUES (?, ?, ?, ?, ?, 0, ?, ?)
                 """,
-                (username, hashed_password, email, full_name, now, now),
+                (username, hashed_password, email, full_name, role, now, now),
             )
         return self.get_user(username)
 
@@ -150,7 +161,7 @@ class UserManager:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT username, hashed_password, email, full_name, disabled
+                SELECT username, hashed_password, email, full_name, role, disabled
                 FROM users
                 ORDER BY username
                 """

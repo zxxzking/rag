@@ -93,6 +93,7 @@ class User(BaseModel):
     email: Optional[str] = None
     full_name: Optional[str] = None
     disabled: Optional[bool] = None
+    role: str = "user"
 
 
 class UserInDB(User):

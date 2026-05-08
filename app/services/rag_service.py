@@ -1,6 +1,7 @@
 import os
 import shutil
 import tempfile
+from collections import Counter
 from typing import Any, Dict, List, Tuple
 
 from core.application import RAGApplication
@@ -47,10 +48,14 @@ class RAGService:
                 status = "error"
                 status_text = str(result)
 
-            node_count = (
-                len(result[2])
+            pipeline_nodes = (
+                result[2]
                 if isinstance(result, tuple) and len(result) > 2 and isinstance(result[2], list)
-                else 0
+                else []
+            )
+            node_counts = Counter(
+                getattr(node, "metadata", {}).get("file_name")
+                for node in pipeline_nodes
             )
 
             if status == "success":
@@ -59,7 +64,7 @@ class RAGService:
                         filename,
                         path,
                         message=status_text,
-                        node_count=node_count,
+                        node_count=node_counts.get(filename, 0),
                     )
             else:
                 for path, filename in zip(paths, filenames):
@@ -180,5 +185,3 @@ class RAGService:
         self.app.reset()
         if hasattr(self.doc_manager, "clear_all"):
             self.doc_manager.clear_all()
-        if hasattr(self.session_manager, "clear_all"):
-            self.session_manager.clear_all()

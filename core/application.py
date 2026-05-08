@@ -60,7 +60,7 @@ class RAGApplication:
             摄取结果说明字符串
         """
         if not files:
-            return "请上传至少一个文件"
+            return "error", "请上传至少一个文件", []
 
         try:
             file_paths: List[str] = []
@@ -79,12 +79,12 @@ class RAGApplication:
             if self.ingestion_pipeline.index:
                 self.workflow = RAGWorkflow(self.ingestion_pipeline.index, pipeline_nodes)
 
-            return status, result
+            return status, result, pipeline_nodes
 
         except Exception as e:
             error_msg = f"文件处理失败: {str(e)}"
             logger.error(error_msg)
-            return error_msg
+            return "error", error_msg, []
 
     # -----------------------------
     # 工具方法
@@ -480,4 +480,5 @@ class RAGApplication:
         系统级重置：清空所有会话与审计历史。
         如需连同向量库/索引一并清空，请在外层调用 DocumentManager.clear_all。
         """
-        return None
+        self.ingestion_pipeline.reset_storage()
+        self.workflow = None

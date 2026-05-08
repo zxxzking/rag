@@ -12,7 +12,7 @@ from typing import List
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from app.schemas import UploadResponse, DocsListResponse, CommonResponse
-from app.routers.users import get_current_active_user, User
+from app.routers.users import get_current_active_user, get_current_admin_user, User
 from app.services import get_rag_service
 from app.services.rag_service import RAGService
 from config.settings import Settings
@@ -48,7 +48,7 @@ def _get_available_path(directory: Path, filename: str) -> Path:
 @router.post("/upload", response_model=UploadResponse)
 async def upload_docs(
         files: List[UploadFile] = File(...),  # 支持多文件，表单字段名为 "files"
-        current_user: User = Depends(get_current_active_user),  # ← 鉴权
+        current_user: User = Depends(get_current_admin_user),  # ← 鉴权
         svc: RAGService = Depends(get_rag_service)  # 注入全局服务实例
 ):
     """
@@ -95,7 +95,7 @@ async def list_docs(current_user: User = Depends(get_current_active_user),  # �
 
 
 @router.post("/reset", response_model=CommonResponse)
-async def reset_system(current_user: User = Depends(get_current_active_user),  # ← 鉴权
+async def reset_system(current_user: User = Depends(get_current_admin_user),  # ← 鉴权
                  svc: RAGService = Depends(get_rag_service)):
     """
     系统级重置：清空会话与索引。

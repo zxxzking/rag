@@ -1,5 +1,6 @@
 from typing import List, Optional, Tuple
 from pathlib import Path
+import shutil
 
 from llama_index.llms.ollama import Ollama
 import torch
@@ -64,7 +65,12 @@ class DocumentIngestionPipeline:
         #     model_name=AppSettings.MODEL,
         #     temperature=AppSettings.TEMPERATURE
         # )
-        Settings.llm = Ollama(base_url="http://localhost:11434", model="deepseek-r1:1.5b",request_timeout=600.0,temperature=AppSettings.TEMPERATURE)
+        Settings.llm = Ollama(
+            base_url=AppSettings.OLLAMA_BASE_URL,
+            model=AppSettings.OLLAMA_MODEL,
+            request_timeout=AppSettings.OLLAMA_REQUEST_TIMEOUT,
+            temperature=AppSettings.TEMPERATURE,
+        )
         Settings.embed_model = HuggingFaceEmbedding(
             model_name=AppSettings.EMBEDDING_MODEL_PATH,
             device="cuda" if torch.cuda.is_available() else "cpu",
@@ -74,11 +80,15 @@ class DocumentIngestionPipeline:
         """初始化存储组件"""
         # 初始化索引存储
         self.redis_index_store = RedisIndexStore.from_host_and_port(
-            host="127.0.0.1", port=6380, namespace="redis_index"
+            host=AppSettings.REDIS_HOST,
+            port=AppSettings.REDIS_PORT,
+            namespace=AppSettings.REDIS_INDEX_NAMESPACE,
         )
         # 初始化文档存储
         self.redis_document_store = RedisDocumentStore.from_host_and_port(
-            host="127.0.0.1", port=6380, namespace="redis_docs"
+            host=AppSettings.REDIS_HOST,
+            port=AppSettings.REDIS_PORT,
+            namespace=AppSettings.REDIS_DOCS_NAMESPACE,
         )
         # self.redis_graph_index_store = RedisIndexStore.from_host_and_port(
         #     host="127.0.0.1", port=6380, namespace="redis_graph_index"
@@ -89,7 +99,7 @@ class DocumentIngestionPipeline:
     def _create_chroma_db(self):
         """创建Chroma向量存储"""
         chroma_client = chromadb.PersistentClient(AppSettings.CHROMA_PERSIST_DIR)
-        chroma_collection = chroma_client.get_or_create_collection("quickstart")
+        chroma_collection = chroma_client.get_or_create_collection(AppSettings.CHROMA_COLLECTION)
         self.chroma_vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
 
     def _create_pipelines(self):
@@ -99,8 +109,8 @@ class DocumentIngestionPipeline:
             "vector_store": self.chroma_vector_store,
             "docstore": self.redis_document_store,
             "cache": IngestionCache(
-                cache=RedisCache.from_host_and_port("localhost", 6380),
-                collection="redis_cache",
+                cache=RedisCache.from_host_and_port(AppSettings.REDIS_HOST, AppSettings.REDIS_PORT),
+                collection=AppSettings.REDIS_CACHE_COLLECTION,
             ),
             "docstore_strategy": DocstoreStrategy.UPSERTS_AND_DELETE
         }
@@ -150,7 +160,12 @@ class DocumentIngestionPipeline:
         #     temperature=temperature,
         #     max_tokens=max_tokens
         # )
-        Settings.llm = Ollama(base_url="http://localhost:11434", model="deepseek-r1:1.5b",request_timeout=600.0,temperature=temperature)
+        Settings.llm = Ollama(
+            base_url=AppSettings.OLLAMA_BASE_URL,
+            model=model_name or AppSettings.OLLAMA_MODEL,
+            request_timeout=AppSettings.OLLAMA_REQUEST_TIMEOUT,
+            temperature=temperature,
+        )
         logger.info(f"🔄 模型已更新: model={model_name}, temperature={temperature}")
 
     def ingest_documents(self, file_paths: List[str]) -> Tuple:
@@ -281,3 +296,70 @@ class DocumentIngestionPipeline:
         # 加载已经存储的索引、文档、向量
         self.index = load_index_from_storage(self.storage_context)
         print("index:", self.index)
+
+    def reset_storage(self) -> None:
+        """Clear persisted knowledge-base storage and rebuild ingestion components."""
+        self.index = None
+        self.text_pipeline = None
+        self.markdown_pipeline = None
+
+        try:
+            chroma_client = chromadb.PersistentClient(AppSettings.CHROMA_PERSIST_DIR)
+            try:
+                chroma_client.delete_collection(AppSettings.CHROMA_COLLECTION)
+            except Exception as e:
+                logger.info(f"Chroma collection did not need deletion: {e}")
+            chroma_collection = chroma_client.get_or_create_collection(AppSettings.CHROMA_COLLECTION)
+            self.chroma_vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
+        except Exception as e:
+            logger.error(f"Failed to reset Chroma collection: {e}")
+            raise
+
+        for directory in [
+            AppSettings.BM25_PERSIST_DIR,
+            AppSettings.RESOURCES_DIR,
+            AppSettings.PDF_IMAGE_DIR,
+        ]:
+            self._clear_directory(directory)
+
+        self._initialize_storage_components()
+        self._clear_redis_namespaces()
+        self._create_pipelines()
+        self.pdf_processor = MultimodalPDFProcessor()
+        self.storage_context = StorageContext.from_defaults(
+            vector_store=self.chroma_vector_store,
+            docstore=self.redis_document_store,
+            index_store=self.redis_index_store,
+        )
+
+    @staticmethod
+    def _clear_directory(directory: str) -> None:
+        target = Path(directory).resolve()
+        project_root = AppSettings.PROJECT_ROOT.resolve()
+        if not target.exists():
+            target.mkdir(parents=True, exist_ok=True)
+            return
+        if project_root not in target.parents and target != project_root:
+            raise RuntimeError(f"Refusing to clear directory outside project: {target}")
+        for child in target.iterdir():
+            if child.is_dir():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+
+    def _clear_redis_namespaces(self) -> None:
+        try:
+            import redis
+        except Exception as e:
+            logger.warning(f"redis package is not available; skipped Redis cleanup: {e}")
+            return
+
+        client = redis.Redis(host=AppSettings.REDIS_HOST, port=AppSettings.REDIS_PORT)
+        prefixes = [
+            AppSettings.REDIS_INDEX_NAMESPACE,
+            AppSettings.REDIS_DOCS_NAMESPACE,
+            AppSettings.REDIS_CACHE_COLLECTION,
+        ]
+        for prefix in prefixes:
+            for key in client.scan_iter(match=f"{prefix}*"):
+                client.delete(key)
