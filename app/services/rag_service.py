@@ -114,7 +114,18 @@ class RAGService:
             username=username or session_id,
             session_id=session["session_id"],
             last_message=query,
-            message_increment=1,
+            message_increment=2,
+        )
+        self.session_manager.add_exchange(
+            username=username or session_id,
+            session_id=session["session_id"],
+            query=query,
+            answer=answer,
+            sources=sources if isinstance(sources, list) else [],
+            model=model,
+            knowledge_bool=knowledge_bool,
+            temperature=temperature,
+            max_tokens=max_tokens,
         )
         return session["session_id"], answer, sources
 
@@ -143,6 +154,8 @@ class RAGService:
         }
         self.app.update_model_config(model, temperature, max_tokens)
         completed = False
+        full_answer = ""
+        sources = []
         try:
             async for chunk in self.app.query_documents_stream(
                 session_id=session["session_id"],
@@ -151,6 +164,10 @@ class RAGService:
             ):
                 if chunk.get("type") == "complete":
                     completed = True
+                    full_answer = str(chunk.get("content") or "")
+                elif chunk.get("type") == "sources":
+                    content = chunk.get("content")
+                    sources = content if isinstance(content, list) else []
                 yield chunk
         except Exception:
             if session.get("is_new"):
@@ -161,15 +178,30 @@ class RAGService:
                 username=username or session_id,
                 session_id=session["session_id"],
                 last_message=query,
-                message_increment=1,
+                message_increment=2,
+            )
+            self.session_manager.add_exchange(
+                username=username or session_id,
+                session_id=session["session_id"],
+                query=query,
+                answer=full_answer,
+                sources=sources,
+                model=model,
+                knowledge_bool=knowledge_bool,
+                temperature=temperature,
+                max_tokens=max_tokens,
             )
         elif session.get("is_new"):
             self.session_manager.delete_session(username or session_id, session["session_id"])
 
-    def get_session(self, session_id: str):
-        return self.app.get_session_history(session_id)
+    def get_session(self, username: str, session_id: str = None):
+        return self.session_manager.list_messages(
+            username=username,
+            session_id=session_id,
+        )
 
-    def clear_session(self, session_id: str):
+    def clear_session(self, username: str, session_id: str):
+        self.session_manager.clear_session_messages(username, session_id)
         self.app.clear_session(session_id)
 
     def list_chat_sessions(self, username: str):

@@ -5,7 +5,7 @@
 - POST /api/chat/clear: 清空指定 session 的消息历史
 """
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from app.schemas import (
     ChatRequest,
     ChatResponse,
@@ -178,7 +178,8 @@ async def delete_chat_session(
 @router.get("/history")
 async def get_user_history(
         current_user: User = Depends(get_current_active_user),  # ← 鉴权
-        svc: RAGService = Depends(get_rag_service)
+        svc: RAGService = Depends(get_rag_service),
+        session_id: str = Query(default=None),
 ) -> List[ChatMessage]:
     """
        获取当前用户的聊天历史 - 安全版本
@@ -199,7 +200,7 @@ async def get_user_history(
     if username is None:
         return []
 
-    chat_history = svc.get_session(username)
+    chat_history = svc.get_session(username, session_id=session_id)
     if not chat_history:
         return []
     # 返回用户的完整聊天历史
@@ -223,5 +224,5 @@ async def chat_clear(req: ClearRequest,
     清空指定会话的历史记录。
     注意：只影响内存或会话存储，不会清空向量库中的文档。
     """
-    svc.clear_session(req.session_id)
+    svc.clear_session(current_user.username, req.session_id)
     return CommonResponse(status="success", message="会话已清空")

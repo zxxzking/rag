@@ -1,4 +1,5 @@
 import sqlite3
+import json
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -48,6 +49,35 @@ class ChatSessionManager:
                 """
                 CREATE INDEX IF NOT EXISTS idx_chat_sessions_user_updated
                 ON chat_sessions(username, updated_at DESC)
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chat_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    username TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    sources TEXT NOT NULL DEFAULT '[]',
+                    model TEXT,
+                    knowledge_bool INTEGER NOT NULL DEFAULT 0,
+                    temperature REAL,
+                    max_tokens INTEGER,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_chat_messages_session_created
+                ON chat_messages(session_id, created_at)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_chat_messages_user_created
+                ON chat_messages(username, created_at)
                 """
             )
 
@@ -159,6 +189,139 @@ class ChatSessionManager:
                 ),
             )
 
+    def add_message(
+        self,
+        *,
+        username: str,
+        session_id: str,
+        role: str,
+        content: str,
+        sources: Optional[List[str]] = None,
+        model: Optional[str] = None,
+        knowledge_bool: bool = False,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+    ) -> None:
+        now = self._now()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO chat_messages (
+                    session_id, username, role, content, sources, model,
+                    knowledge_bool, temperature, max_tokens, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session_id,
+                    username,
+                    role,
+                    content or "",
+                    json.dumps(sources or [], ensure_ascii=False),
+                    model,
+                    1 if knowledge_bool else 0,
+                    temperature,
+                    max_tokens,
+                    now,
+                ),
+            )
+
+    def add_exchange(
+        self,
+        *,
+        username: str,
+        session_id: str,
+        query: str,
+        answer: str,
+        sources: Optional[List[str]] = None,
+        model: Optional[str] = None,
+        knowledge_bool: bool = False,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+    ) -> None:
+        self.add_message(
+            username=username,
+            session_id=session_id,
+            role="user",
+            content=query,
+            sources=[],
+            model=model,
+            knowledge_bool=knowledge_bool,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        self.add_message(
+            username=username,
+            session_id=session_id,
+            role="assistant",
+            content=answer,
+            sources=sources or [],
+            model=model,
+            knowledge_bool=knowledge_bool,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+
+    def list_messages(
+        self,
+        *,
+        username: str,
+        session_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        params: List[Any] = [username]
+        where = "WHERE username = ?"
+        if session_id:
+            where += " AND session_id = ?"
+            params.append(session_id)
+
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    f"""
+                    SELECT session_id, role, content, sources, model, knowledge_bool,
+                           temperature, max_tokens, created_at
+                    FROM chat_messages
+                    {where}
+                    ORDER BY created_at ASC, id ASC
+                    """,
+                    params,
+                ).fetchall()
+        except Exception as e:
+            logger.error(f"Failed to list chat messages from SQLite: {e}")
+            return []
+
+        messages = []
+        for row in rows:
+            message = dict(row)
+            try:
+                message["sources"] = json.loads(message.get("sources") or "[]")
+            except json.JSONDecodeError:
+                message["sources"] = []
+            message["knowledge_bool"] = bool(message.get("knowledge_bool"))
+            messages.append(message)
+        return messages
+
+    def clear_session_messages(self, username: str, session_id: str) -> None:
+        now = self._now()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                DELETE FROM chat_messages
+                WHERE username = ? AND session_id = ?
+                """,
+                (username, session_id),
+            )
+            conn.execute(
+                """
+                UPDATE chat_sessions
+                SET last_message = '',
+                    message_count = 0,
+                    updated_at = ?
+                WHERE username = ? AND session_id = ?
+                """,
+                (now, username, session_id),
+            )
+
     def list_sessions(self, username: str) -> List[Dict[str, Any]]:
         try:
             with self._connect() as conn:
@@ -179,6 +342,13 @@ class ChatSessionManager:
 
     def delete_session(self, username: str, session_id: str) -> bool:
         with self._connect() as conn:
+            conn.execute(
+                """
+                DELETE FROM chat_messages
+                WHERE username = ? AND session_id = ?
+                """,
+                (username, session_id),
+            )
             cursor = conn.execute(
                 """
                 DELETE FROM chat_sessions
@@ -190,8 +360,10 @@ class ChatSessionManager:
 
     def clear_user_sessions(self, username: str) -> None:
         with self._connect() as conn:
+            conn.execute("DELETE FROM chat_messages WHERE username = ?", (username,))
             conn.execute("DELETE FROM chat_sessions WHERE username = ?", (username,))
 
     def clear_all(self) -> None:
         with self._connect() as conn:
+            conn.execute("DELETE FROM chat_messages")
             conn.execute("DELETE FROM chat_sessions")
